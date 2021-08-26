@@ -1,0 +1,10 @@
+Inspired by [Evan Martin][0], I wanted to try writing a Unix terminal emulator.
+And here it is! (WIP.)
+
+[0]: http://neugierig.org/software/blog/2016/07/terminal-emulators.html
+
+Credits
+-------
+
+I lifted the pseudoterminal setup code from Kerrisk's "The Linux Programming
+Environment" (listings 64-1 and 64-2).
