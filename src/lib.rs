@@ -6,23 +6,27 @@ use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::hash::Hasher;
 use std::mem::take;
+use std::io::Error;
 use std::ptr::NonNull;
 use tinyvec::TinyVec;
 
 // adapted from Kerrisk
 // FIXME informative errors
-fn create_pty() -> Result<(c_int, NonNull<c_char>), ()> {
+fn create_pty() -> Result<(c_int, NonNull<c_char>), Error> {
     unsafe {
         let master_fd = match libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) {
-            -1 => return Err(()),
+            -1 => return Err(Error::last_os_error()),
             fd => fd,
         };
         if libc::grantpt(master_fd) == -1 || libc::unlockpt(master_fd) == -1 {
+            let e = Error::last_os_error();
             libc::close(master_fd);
-            return Err(());
+            return Err(e);
         }
         let slave_name = NonNull::new(libc::ptsname(master_fd)).ok_or_else(|| {
+            let e = Error::last_os_error();
             libc::close(master_fd);
+            e
         })?;
         Ok((master_fd, slave_name))
     }
@@ -35,26 +39,26 @@ fn spawn_with_pty<'a>(
     args: impl Iterator<Item = &'a CStr>,
     winsize: libc::winsize,
     termios: Option<libc::termios>,
-) -> Result<(c_int, libc::pid_t), ()> {
+) -> Result<(c_int, libc::pid_t), Error> {
     let (master_fd, slave_name) = create_pty()?;
     match unsafe { libc::fork() } {
-        -1 => Err(()),
+        -1 => Err(Error::last_os_error()),
         0 => unsafe {
             if libc::setsid() == -1 {
-                return Err(());
+                return Err(Error::last_os_error());
             }
             libc::close(master_fd);
             let slave_fd = match libc::open(slave_name.as_ptr(), libc::O_RDWR) {
-                -1 => return Err(()),
+                -1 => return Err(Error::last_os_error()),
                 fd => fd,
             };
 
             if libc::ioctl(slave_fd, libc::TIOCSWINSZ, &winsize as *const _) == -1 {
-                return Err(());
+                return Err(Error::last_os_error());
             }
             if let Some(termios) = termios {
                 if libc::tcsetattr(slave_fd, libc::TCSANOW, &termios as *const _) == -1 {
-                    return Err(());
+                    return Err(Error::last_os_error());
                 }
             }
 
@@ -62,7 +66,7 @@ fn spawn_with_pty<'a>(
                 || libc::dup2(slave_fd, libc::STDOUT_FILENO) != libc::STDOUT_FILENO
                 || libc::dup2(slave_fd, libc::STDERR_FILENO) != libc::STDERR_FILENO
             {
-                return Err(());
+                return Err(Error::last_os_error());
             }
             assert!(slave_fd > libc::STDERR_FILENO);
             libc::close(slave_fd);
@@ -70,7 +74,7 @@ fn spawn_with_pty<'a>(
             let mut args: Vec<*const c_char> = args.map(|arg| arg.as_ptr()).collect();
             args.push(std::ptr::null());
             libc::execv(cmd.as_ptr(), args.as_ptr());
-            Err(())
+            Err(Error::last_os_error())
         },
         child_pid => Ok((master_fd, child_pid)),
     }
@@ -100,7 +104,7 @@ impl TermBuilder {
         self
     }
 
-    pub fn spawn(self) -> Result<Term, ()> {
+    pub fn spawn(self) -> Result<Term, Error> {
         let (pty, sh_pid) = spawn_with_pty(
             self.sh_path.as_ref(),
             self.sh_args.iter().map(AsRef::as_ref),
